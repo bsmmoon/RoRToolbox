@@ -25,11 +25,11 @@ module QueryService
     "#{table}.#{column} IS #{value}"
   end
 
-  def self.upsert(table, columns, rows)
+  def self.upsert(table, columns, rows, uniq)
     rows = rows.map{|e| convert_arr_to_db_columns(e)}.join(',')
     ActiveRecord::Base.connection.execute("
         INSERT INTO #{table} (#{columns.join(',')}) VALUES #{rows}
-          ON CONFLICT (id) DO
+          ON CONFLICT (#{uniq}) DO
         UPDATE SET (#{columns.join(',')}) = (#{columns.map{|e| "excluded.#{e}"}.join(',')})
     ")
   end
@@ -45,7 +45,21 @@ module QueryService
     end
   end
 
-  def self.convert_arr_to_db_columns(arr)
-    "(#{ (arr.map{|e| "'#{e.class == String ? sanitize_string_for_db(e) : e}'"}).join(', ') })"
+  def self.sanitize_col(col, db_type: :pg)
+    if col.class == String
+      if StringService::numeric? col
+        col.to_f
+      else
+        "'#{sanitize_string_for_db(col, db_type: db_type)}'"
+      end
+    elsif col.nil?
+      'NULL'
+    else
+      "'#{col}'"
+    end
+  end
+
+  def self.convert_arr_to_db_columns(arr, db_type: :pg)
+    "(#{ (arr.map{|e| sanitize_col(e, db_type: db_type)}).join(', ') })"
   end
 end
