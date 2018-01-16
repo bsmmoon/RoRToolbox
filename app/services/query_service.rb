@@ -36,7 +36,16 @@ module QueryService
 
   private
 
+  def self.sanitize_string_for_db(str, db_type: :pg)
+    case db_type
+      when :pg
+        str.gsub("'", "''")
+      else
+        raise StandardError, "Unexpected db_type '#{db_type}' received"
+    end
+  end
+
   def self.convert_arr_to_db_columns(arr)
-    "(#{ (arr.map{|e| "'#{e}'"}).join(', ') })"
+    "(#{ (arr.map{|e| "'#{e.class == String ? sanitize_string_for_db(e) : e}'"}).join(', ') })"
   end
 end
