@@ -25,13 +25,52 @@ module QueryService
     "#{table}.#{column} IS #{value}"
   end
 
-  def self.upsert(table, columns, rows, uniq)
+  def self.insert(table, columns, rows)
     rows = rows.map{|e| convert_arr_to_db_columns(e)}.join(',')
-    ActiveRecord::Base.connection.execute("
-        INSERT INTO #{table} (#{columns.join(',')}) VALUES #{rows}
-          ON CONFLICT (#{uniq}) DO
-        UPDATE SET (#{columns.join(',')}) = (#{columns.map{|e| "excluded.#{e}"}.join(',')})
-    ")
+    return unless rows.present?
+    ActiveRecord::Base.connection.execute("INSERT INTO #{table} (#{columns.join(',')}) VALUES #{rows}")
+  end
+
+  def self.upsert(table_name, columns, rows, uniqs)
+    rows = rows.map{|e| convert_arr_to_db_columns(e)}.join(',')
+    return unless rows.present?
+
+    table = table_name.classify.constantize
+    uniqs = [uniqs] if uniqs.class != Array
+
+    rows_to_be_created = rows
+
+    uniqs.each do |uniq|
+      uniq_constrained_col_index = row.index(uniq)
+      existing = Set.new(table.pluck(uniq))
+
+      rows_to_be_updated = []
+      pruned_rows_to_be_created = []
+      rows_to_be_created.each do |row|
+        if existing.include? row[uniq_constrained_col_index]
+          rows_to_be_updated << row
+        else
+          pruned_rows_to_be_created << row
+        end
+      end
+      rows_to_be_created = pruned_rows_to_be_created
+
+      rows_to_be_updated = rows_to_be_updated.map{ |_, e| convert_hash_to_db_columns(e, columns) }.join(',')
+
+      QueryService::update(table_name, columns, rows_to_be_updated)
+    end
+    QueryService::insert(table_name, columns, rows_to_be_created)
+  end
+
+  def self.update(table, columns, rows, id='id')
+    id_index = columns.index(id)
+    mapped = rows.map{|e| e[id_index]}.join(',')
+    mapping = rows.map{|e| "WHEN '#{e[id_index]}' THEN #{convert_arr_to_db_columns(ArrayService::delete_at(e, id_index))}"}.join(' ')
+    ActiveRecord::Base.connection.execute("UPDATE #{table} SET (#{ArrayService::delete_at(columns, id_index).join(',')}) = (CASE id #{mapping} END) WHERE #{table}.#{id} IN (#{mapped})")
+  end
+
+  def self.sort(table:, sorters:)
+    table.order(sorters.map{|sorter| "#{sorter['attr']} #{sorter['order']}"})
   end
 
   private
@@ -48,7 +87,13 @@ module QueryService
   def self.sanitize_col(col, db_type: :pg)
     if col.class == String
       if StringService::numeric? col
-        col.to_f
+        if StringService::float? col
+          col.to_f
+        else
+          col.to_i
+        end
+      elsif StringService::boolean?(col)
+        StringService::to_boolean(col)
       else
         "'#{sanitize_string_for_db(col, db_type: db_type)}'"
       end
